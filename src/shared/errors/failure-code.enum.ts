@@ -9,6 +9,7 @@ export enum FailureCode {
   CurrencyMismatch = "CURRENCY_MISMATCH",
   InsufficientBalance = "INSUFFICIENT_BALANCE",
   ReferenceNotFound = "REFERENCE_NOT_FOUND",
+  ReferenceMismatch = "REFERENCE_MISMATCH",
   ReversalWouldOverdraw = "REVERSAL_WOULD_OVERDRAW",
   ReferenceAlreadyUsed = "REFERENCE_ALREADY_USED",
   ReferenceWrongKind = "REFERENCE_WRONG_KIND",

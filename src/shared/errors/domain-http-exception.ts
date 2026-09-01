@@ -116,6 +116,42 @@ export class ReferenceNotFoundException extends DomainHttpException {
   }
 }
 
+export class ReferenceMismatchException extends DomainHttpException {
+  readonly failureCode = FailureCode.ReferenceMismatch;
+  readonly title = "Reference mismatch";
+
+  constructor(referenceExternalTransactionId: string) {
+    super(
+      HttpStatus.UNPROCESSABLE_ENTITY,
+      `Referência "${referenceExternalTransactionId}" não corresponde ao provider/player/wallet/moeda/rodada ou valor da transação.`,
+    );
+  }
+}
+
+export class ReferenceWrongKindException extends DomainHttpException {
+  readonly failureCode = FailureCode.ReferenceWrongKind;
+  readonly title = "Reference wrong kind";
+
+  constructor(referenceExternalTransactionId: string) {
+    super(
+      HttpStatus.UNPROCESSABLE_ENTITY,
+      `Referência "${referenceExternalTransactionId}" não pode ser revertida por esta operação (kind incompatível).`,
+    );
+  }
+}
+
+export class ReferenceAlreadyUsedException extends DomainHttpException {
+  readonly failureCode = FailureCode.ReferenceAlreadyUsed;
+  readonly title = "Reference already used";
+
+  constructor(referenceExternalTransactionId: string) {
+    super(
+      HttpStatus.UNPROCESSABLE_ENTITY,
+      `Referência "${referenceExternalTransactionId}" já foi revertida por uma operação do mesmo tipo.`,
+    );
+  }
+}
+
 export class ReversalWouldOverdrawException extends DomainHttpException {
   readonly failureCode = FailureCode.ReversalWouldOverdraw;
   readonly title = "Reversal would overdraw wallet";

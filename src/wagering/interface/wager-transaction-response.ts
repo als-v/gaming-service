@@ -1,4 +1,5 @@
 import type { MoneyDto } from "../../shared/money/money.dto.js";
+import type { WagerTransaction } from "../domain/wager-transaction.js";
 
 export interface SubmitWagerTransactionResponse {
   transactionId: string;
@@ -24,24 +25,21 @@ export interface WagerTransactionResponse {
   createdAt: string;
 }
 
-export function placeholderWagerTransaction(
-  overrides: Partial<WagerTransactionResponse>,
-): WagerTransactionResponse {
+export function toWagerTransactionResponse(transaction: WagerTransaction): WagerTransactionResponse {
   return {
-    transactionId: "0192f298-345e-7e38-af88-e43f851a819d",
-    providerId: "provider-a",
-    externalTransactionId: "transaction-123",
-    playerId: "0192f28f-5dc0-7d58-bdb2-814ad6a0f4a1",
-    walletId: "0192f291-27dd-7d3f-8071-5f8685deef37",
-    roundId: "round-987",
-    gameId: "fortune-chimp",
-    kind: "BET",
-    money: { amount: "25.00", currency: "BRL" },
-    status: "PROCESSED",
-    referenceTransactionId: null,
-    failureCode: null,
-    processedAt: new Date(0).toISOString(),
-    createdAt: new Date(0).toISOString(),
-    ...overrides,
+    transactionId: transaction.id,
+    providerId: transaction.providerId,
+    externalTransactionId: transaction.externalTransactionId,
+    playerId: transaction.playerId,
+    walletId: transaction.walletId,
+    roundId: transaction.roundId,
+    gameId: transaction.gameId,
+    kind: transaction.kind,
+    money: transaction.money.toJSON(),
+    status: transaction.status,
+    referenceTransactionId: transaction.referenceTransactionId ?? null,
+    failureCode: transaction.failureCode ?? null,
+    processedAt: transaction.processedAt === undefined ? null : transaction.processedAt.toISOString(),
+    createdAt: transaction.createdAt.toISOString(),
   };
 }
