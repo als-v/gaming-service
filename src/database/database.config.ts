@@ -22,9 +22,7 @@ export function buildTypeOrmOptions(env: NodeJS.ProcessEnv = process.env): DataS
     synchronize: false,
     logging: env["DATABASE_LOGGING"] === "true",
     entities: [isProduction ? "dist/**/*.entity.js" : "src/**/*.entity.ts"],
-    migrations: [
-      isProduction ? "dist/database/migrations/*.js" : "src/database/migrations/*.ts",
-    ],
+    migrations: [isProduction ? "dist/database/migrations/*.js" : "src/database/migrations/*.ts"],
     migrationsTableName: "typeorm_migrations",
   };
 }

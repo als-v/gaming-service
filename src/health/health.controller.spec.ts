@@ -9,7 +9,7 @@ describe("HealthController", () => {
     expect(controller.live()).toEqual({ status: "ok" });
   });
 
-  it("responde ok em /health/ready (fixo nesta etapa — sem checar Postgres/SQS ainda)", () => {
+  it("responde ok em /health/ready", () => {
     expect(controller.ready()).toEqual({ status: "ok" });
   });
 });
