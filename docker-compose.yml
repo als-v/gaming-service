@@ -1,0 +1,48 @@
+name: gaming-service
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: gaming-service-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${DATABASE_USER}
+      POSTGRES_PASSWORD: ${DATABASE_PASSWORD}
+      POSTGRES_DB: ${DATABASE_NAME}
+    ports:
+      - "${DATABASE_PORT}:5432"
+    volumes:
+      - gaming_service_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DATABASE_USER} -d ${DATABASE_NAME}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  localstack:
+    image: localstack/localstack:3
+    container_name: gaming-service-localstack
+    restart: unless-stopped
+    environment:
+      SERVICES: sqs
+      DEFAULT_REGION: ${AWS_REGION}
+      AWS_DEFAULT_REGION: ${AWS_REGION}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      PERSISTENCE: 0
+    ports:
+      - "${LOCALSTACK_PORT}:4566"
+    volumes:
+      - ./docker/localstack/init-queues.sh:/etc/localstack/init/ready.d/init-queues.sh:ro
+      - gaming_service_localstack_data:/var/lib/localstack
+    healthcheck:
+      test: ["CMD", "awslocal", "sqs", "list-queues"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  gaming_service_postgres_data:
+    name: gaming_service_postgres_data
+  gaming_service_localstack_data:
+    name: gaming_service_localstack_data
