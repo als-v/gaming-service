@@ -4,6 +4,7 @@ import {
   PROVIDER_IDENTITY_PORT,
   type ProviderIdentityPort,
 } from "../../shared/auth/provider-identity.port.js";
+import { currentCorrelationId } from "../../shared/observability/correlation-context.js";
 import { GetWagerTransactionByIdUseCase } from "../application/get-wager-transaction-by-id.use-case.js";
 import { SubmitWagerTransactionUseCase } from "../application/submit-wager-transaction.use-case.js";
 import { SubmitWagerTransactionDto } from "./dto/submit-wager-transaction.dto.js";
@@ -41,6 +42,7 @@ export class WagerTransactionsController {
       kind: dto.kind,
       money: dto.money,
       referenceExternalTransactionId: dto.referenceExternalTransactionId,
+      correlationId: currentCorrelationId(),
     });
     return {
       transactionId: result.transaction.id,

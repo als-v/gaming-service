@@ -3,6 +3,7 @@ import { ValidationPipe } from "@nestjs/common";
 
 import { ProblemDetailsExceptionFilter } from "./shared/errors/problem-details.filter.js";
 import { validationExceptionFactory } from "./shared/errors/validation-exception-factory.js";
+import { CorrelationInterceptor } from "./shared/observability/correlation.interceptor.js";
 
 export function configureApp(app: INestApplication): void {
   app.useGlobalPipes(
@@ -14,4 +15,5 @@ export function configureApp(app: INestApplication): void {
     }),
   );
   app.useGlobalFilters(new ProblemDetailsExceptionFilter());
+  app.useGlobalInterceptors(new CorrelationInterceptor());
 }

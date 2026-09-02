@@ -15,6 +15,7 @@ import {
 import { OutboxMessageEntity } from "../../src/shared/messaging/infrastructure/persistence/outbox-message.entity.js";
 import { Wallet } from "../../src/wallets/domain/wallet.js";
 import { Money } from "../../src/shared/money/money.js";
+import { MetricsService } from "../../src/shared/observability/metrics.service.js";
 import { WalletEntity } from "../../src/wallets/infrastructure/persistence/wallet.entity.js";
 import { WalletLedgerEntryEntity } from "../../src/wallets/infrastructure/persistence/wallet-ledger-entry.entity.js";
 import { WalletMapper } from "../../src/wallets/infrastructure/persistence/wallet.mapper.js";
@@ -26,7 +27,7 @@ describe("SubmitWagerTransactionUseCase com Postgres real (etapa 5 — Definitio
   beforeAll(async () => {
     dataSource = new DataSource(buildTypeOrmOptions());
     await dataSource.initialize();
-    useCase = new SubmitWagerTransactionUseCase(dataSource);
+    useCase = new SubmitWagerTransactionUseCase(dataSource, new MetricsService());
   });
 
   async function seedWallet(initialAmount: string, currency = "BRL"): Promise<string> {

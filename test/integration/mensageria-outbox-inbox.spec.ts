@@ -14,6 +14,7 @@ import {
   buildSqsQueueNames,
 } from "../../src/shared/messaging/infrastructure/sqs.config.js";
 import { Money } from "../../src/shared/money/money.js";
+import { MetricsService } from "../../src/shared/observability/metrics.service.js";
 import { SubmitWagerTransactionUseCase } from "../../src/wagering/application/submit-wager-transaction.use-case.js";
 import { WagerTransactionStatus } from "../../src/wagering/domain/wager-transaction-status.enum.js";
 import { WagerTransactionEntity } from "../../src/wagering/infrastructure/persistence/wager-transaction.entity.js";
@@ -26,6 +27,48 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+interface EventCollectionResult {
+  receivedEventIds: Set<string>;
+  duplicateDeliveries: string[];
+}
+
+async function collectExpectedEvents(
+  sqsClient: SQSClient,
+  queueUrl: string,
+  expectedEventIds: Set<string>,
+  timeoutMs: number,
+): Promise<EventCollectionResult> {
+  const receivedEventIds = new Set<string>();
+  const duplicateDeliveries: string[] = [];
+  const deadline = Date.now() + timeoutMs;
+
+  while (receivedEventIds.size < expectedEventIds.size && Date.now() < deadline) {
+    const response = await sqsClient.send(
+      new ReceiveMessageCommand({ QueueUrl: queueUrl, MaxNumberOfMessages: 10, WaitTimeSeconds: 2 }),
+    );
+    const messages = response.Messages ?? [];
+    for (const message of messages) {
+      if (message.Body !== undefined) {
+        const body = JSON.parse(message.Body) as { eventId: string; aggregateId: string };
+        if (expectedEventIds.has(body.eventId)) {
+          if (receivedEventIds.has(body.eventId)) {
+            duplicateDeliveries.push(body.eventId);
+          } else {
+            receivedEventIds.add(body.eventId);
+          }
+        }
+      }
+      if (message.ReceiptHandle !== undefined) {
+        await sqsClient.send(
+          new DeleteMessageCommand({ QueueUrl: queueUrl, ReceiptHandle: message.ReceiptHandle }),
+        );
+      }
+    }
+  }
+
+  return { receivedEventIds, duplicateDeliveries };
+}
+
 describe("Mensageria, outbox e inbox com Postgres e LocalStack SQS reais (etapa 6 — Definition of Done)", () => {
   let dataSource: DataSource;
   let useCase: SubmitWagerTransactionUseCase;
@@ -34,7 +77,7 @@ describe("Mensageria, outbox e inbox com Postgres e LocalStack SQS reais (etapa 
   beforeAll(async () => {
     dataSource = new DataSource(buildTypeOrmOptions());
     await dataSource.initialize();
-    useCase = new SubmitWagerTransactionUseCase(dataSource);
+    useCase = new SubmitWagerTransactionUseCase(dataSource, new MetricsService());
     sqsClient = new SQSClient(buildSqsClientConfig());
   });
 
@@ -214,43 +257,12 @@ describe("Mensageria, outbox e inbox com Postgres e LocalStack SQS reais (etapa 
       const queueUrl = await queueUrlResolver.resolve(
         buildSqsQueueNames().wagerTransactionEventsQueueName,
       );
-      const receivedEventIds = new Set<string>();
-      const duplicateDeliveries: string[] = [];
-      for (let i = 0; i < 20 && receivedEventIds.size < expectedEventIds.size; i += 1) {
-        const response = await sqsClient.send(
-          new ReceiveMessageCommand({
-            QueueUrl: queueUrl,
-            MaxNumberOfMessages: 10,
-            WaitTimeSeconds: 2,
-          }),
-        );
-        const messages = response.Messages ?? [];
-        if (messages.length === 0) {
-          continue;
-        }
-        for (const message of messages) {
-          if (message.Body === undefined) {
-            continue;
-          }
-          const body = JSON.parse(message.Body) as { eventId: string; aggregateId: string };
-          if (!expectedEventIds.has(body.eventId)) {
-            continue;
-          }
-          if (receivedEventIds.has(body.eventId)) {
-            duplicateDeliveries.push(body.eventId);
-          } else {
-            receivedEventIds.add(body.eventId);
-          }
-          if (message.ReceiptHandle !== undefined) {
-            await sqsClient.send(
-              new DeleteMessageCommand({
-                QueueUrl: queueUrl,
-                ReceiptHandle: message.ReceiptHandle,
-              }),
-            );
-          }
-        }
-      }
+      const { receivedEventIds, duplicateDeliveries } = await collectExpectedEvents(
+        sqsClient,
+        queueUrl,
+        expectedEventIds,
+        30_000,
+      );
 
       expect(duplicateDeliveries).toHaveLength(0);
       expect(receivedEventIds.size).toBe(expectedEventIds.size);

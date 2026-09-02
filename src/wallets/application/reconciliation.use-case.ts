@@ -4,6 +4,7 @@ import type { DataSource } from "typeorm";
 
 import { WalletNotFoundException } from "../../shared/errors/domain-http-exception.js";
 import { Money } from "../../shared/money/money.js";
+import { MetricsService } from "../../shared/observability/metrics.service.js";
 import { LedgerDirection } from "../domain/ledger-direction.enum.js";
 import { WalletLedgerEntryEntity } from "../infrastructure/persistence/wallet-ledger-entry.entity.js";
 import { WalletEntity } from "../infrastructure/persistence/wallet.entity.js";
@@ -22,7 +23,10 @@ export interface ReconciliationResult {
 export class ReconciliationUseCase {
   private readonly logger = new Logger(ReconciliationUseCase.name);
 
-  constructor(@InjectDataSource() private readonly dataSource: DataSource) {}
+  constructor(
+    @InjectDataSource() private readonly dataSource: DataSource,
+    private readonly metrics: MetricsService,
+  ) {}
 
   async execute(walletId: string): Promise<ReconciliationResult> {
     const walletEntity = await this.dataSource
@@ -46,9 +50,11 @@ export class ReconciliationUseCase {
     const difference = wallet.balance.subtract(calculatedBalance);
 
     if (!consistent) {
+      this.metrics.recordReconciliationDivergence();
       this.logger.error(
         `Divergência de reconciliação na wallet "${walletId}": stored=${wallet.balance.toString()}, ` +
           `calculated=${calculatedBalance.toString()}, difference=${difference.toString()}.`,
+        { walletId },
       );
     }
 

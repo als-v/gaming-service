@@ -8,6 +8,7 @@ import { CreateWalletUseCase } from "../../src/wallets/application/create-wallet
 import { ReconciliationUseCase } from "../../src/wallets/application/reconciliation.use-case.js";
 import { SubmitWagerTransactionUseCase } from "../../src/wagering/application/submit-wager-transaction.use-case.js";
 import { WalletNotFoundException } from "../../src/shared/errors/domain-http-exception.js";
+import { MetricsService } from "../../src/shared/observability/metrics.service.js";
 import { WalletEntity } from "../../src/wallets/infrastructure/persistence/wallet.entity.js";
 
 describe("ReconciliationUseCase com Postgres real", () => {
@@ -19,9 +20,9 @@ describe("ReconciliationUseCase com Postgres real", () => {
   beforeAll(async () => {
     dataSource = new DataSource(buildTypeOrmOptions());
     await dataSource.initialize();
-    reconciliationUseCase = new ReconciliationUseCase(dataSource);
+    reconciliationUseCase = new ReconciliationUseCase(dataSource, new MetricsService());
     createWalletUseCase = new CreateWalletUseCase(dataSource);
-    submitWagerTransactionUseCase = new SubmitWagerTransactionUseCase(dataSource);
+    submitWagerTransactionUseCase = new SubmitWagerTransactionUseCase(dataSource, new MetricsService());
   });
 
   afterAll(async () => {

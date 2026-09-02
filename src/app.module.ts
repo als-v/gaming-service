@@ -5,6 +5,7 @@ import { DatabaseModule } from "./database/database.module.js";
 import { HealthModule } from "./health/health.module.js";
 import { AuthModule } from "./shared/auth/auth.module.js";
 import { MessagingModule } from "./shared/messaging/messaging.module.js";
+import { ObservabilityModule } from "./shared/observability/observability.module.js";
 import { WageringModule } from "./wagering/wagering.module.js";
 import { WalletsModule } from "./wallets/wallets.module.js";
 
@@ -18,6 +19,7 @@ import { WalletsModule } from "./wallets/wallets.module.js";
     HealthModule,
     AuthModule,
     MessagingModule,
+    ObservabilityModule,
     WalletsModule,
     WageringModule,
   ],

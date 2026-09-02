@@ -84,6 +84,7 @@ export class OutboxPublisherWorker implements OnApplicationBootstrap, OnModuleDe
         } catch (error) {
           this.logger.warn(
             `Falha ao publicar mensagem de outbox "${message.id}" (evento ${message.eventType}): ${String(error)}`,
+            { outboxMessageId: message.id, eventType: message.eventType },
           );
           message.scheduleRetry(now);
         }

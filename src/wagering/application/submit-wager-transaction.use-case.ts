@@ -38,6 +38,7 @@ import { OutboxMessageMapper } from "../../shared/messaging/infrastructure/persi
 import { OutboxMessage } from "../../shared/messaging/outbox-message.js";
 import { CurrencyMismatchError } from "../../shared/money/money.errors.js";
 import { Money, type MoneyProps } from "../../shared/money/money.js";
+import { MetricsService } from "../../shared/observability/metrics.service.js";
 import { LedgerDirection } from "../../wallets/domain/ledger-direction.enum.js";
 import { InsufficientBalanceError } from "../../wallets/domain/wallet.errors.js";
 import { WalletLedgerEntryEntity } from "../../wallets/infrastructure/persistence/wallet-ledger-entry.entity.js";
@@ -67,8 +68,8 @@ export interface SubmitWagerTransactionCommand {
   kind: SubmittableWagerTransactionKind;
   money: MoneyProps;
   referenceExternalTransactionId: string | undefined;
-  correlationId?: string;
-  causationId?: string;
+  correlationId?: string | undefined;
+  causationId?: string | undefined;
   inbox?: SubmitWagerTransactionInboxProps;
 }
 
@@ -110,9 +111,13 @@ function transientRetryDelay(attempt: number): number {
 export class SubmitWagerTransactionUseCase {
   private readonly logger = new Logger(SubmitWagerTransactionUseCase.name);
 
-  constructor(@InjectDataSource() private readonly dataSource: DataSource) {}
+  constructor(
+    @InjectDataSource() private readonly dataSource: DataSource,
+    private readonly metrics: MetricsService,
+  ) {}
 
   async execute(command: SubmitWagerTransactionCommand): Promise<SubmitWagerTransactionResult> {
+    const stopTimer = this.metrics.transactionDuration.startTimer();
     let result: SubmitWagerTransactionResult;
     try {
       result = await this.runInTransaction(
@@ -124,6 +129,14 @@ export class SubmitWagerTransactionUseCase {
         throw new ReferenceAlreadyUsedException(command.referenceExternalTransactionId ?? "");
       }
       throw error;
+    } finally {
+      stopTimer();
+    }
+
+    if (result.idempotentReplay) {
+      this.metrics.recordDuplicate(result.transaction.kind);
+    } else {
+      this.metrics.recordTransactionOutcome(result.transaction.status, result.transaction.kind);
     }
 
     if (
@@ -156,13 +169,18 @@ export class SubmitWagerTransactionUseCase {
       try {
         return await this.dataSource.transaction(operation);
       } catch (error) {
-        if (isTransientTransactionError(error) && attempt < MAX_TRANSIENT_RETRY_ATTEMPTS) {
-          this.logger.warn(
-            `Retentando transação após erro transitório do Postgres em ${context} ` +
-              `(tentativa ${attempt}/${MAX_TRANSIENT_RETRY_ATTEMPTS}, code=${postgresErrorCodeOf(error) ?? "unknown"}).`,
-          );
-          await delay(transientRetryDelay(attempt));
-          continue;
+        if (isTransientTransactionError(error)) {
+          this.metrics.recordLockConflict();
+          if (attempt < MAX_TRANSIENT_RETRY_ATTEMPTS) {
+            this.metrics.recordRetry("db_transient");
+            this.logger.warn(
+              `Retentando transação após erro transitório do Postgres em ${context} ` +
+                `(tentativa ${attempt}/${MAX_TRANSIENT_RETRY_ATTEMPTS}, code=${postgresErrorCodeOf(error) ?? "unknown"}).`,
+              { attempt, maxAttempts: MAX_TRANSIENT_RETRY_ATTEMPTS, code: postgresErrorCodeOf(error) },
+            );
+            await delay(transientRetryDelay(attempt));
+            continue;
+          }
         }
         throw error;
       }
@@ -191,6 +209,7 @@ export class SubmitWagerTransactionUseCase {
       if (isUniqueViolation(error, "UQ_wager_transactions_reference_kind_processed")) {
         this.logger.warn(
           `Referência já utilizada por outra transação concorrente ao tentar resolver "${id}"; ignorando.`,
+          { transactionId: id },
         );
         return false;
       }

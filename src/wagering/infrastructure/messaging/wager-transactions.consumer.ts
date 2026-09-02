@@ -1,3 +1,5 @@
+import { randomUUID } from "node:crypto";
+
 import {
   ChangeMessageVisibilityCommand,
   DeleteMessageCommand,
@@ -21,6 +23,13 @@ import { DomainHttpException } from "../../../shared/errors/domain-http-exceptio
 import { SQS_CLIENT } from "../../../shared/messaging/infrastructure/sqs-client.provider.js";
 import { SqsQueueUrlResolver } from "../../../shared/messaging/infrastructure/sqs-queue-url.resolver.js";
 import { buildSqsQueueNames } from "../../../shared/messaging/infrastructure/sqs.config.js";
+import {
+  currentCausationId,
+  currentCorrelationId,
+  currentCorrelationStore,
+  runWithCorrelation,
+} from "../../../shared/observability/correlation-context.js";
+import { MetricsService } from "../../../shared/observability/metrics.service.js";
 import { SubmitWagerTransactionUseCase } from "../../application/submit-wager-transaction.use-case.js";
 import { WagerTransactionRequestedMessageDto } from "../../interface/dto/wager-transaction-requested-message.dto.js";
 
@@ -49,6 +58,7 @@ export class WagerTransactionsConsumer implements OnApplicationBootstrap, OnModu
     @Inject(SQS_CLIENT) private readonly sqsClient: SQSClient,
     private readonly queueUrlResolver: SqsQueueUrlResolver,
     private readonly submitWagerTransactionUseCase: SubmitWagerTransactionUseCase,
+    private readonly metrics: MetricsService,
   ) {}
 
   onApplicationBootstrap(): void {
@@ -101,36 +111,58 @@ export class WagerTransactionsConsumer implements OnApplicationBootstrap, OnModu
     }
     const receiveCount = Number(message.Attributes?.ApproximateReceiveCount ?? "1");
 
-    let envelope: WagerTransactionRequestedMessageDto;
-    try {
-      envelope = await this.parseEnvelope(message.Body);
-    } catch (error) {
-      this.logger.error(
-        `Mensagem malformada (sqsMessageId=${sqsMessageId}, tentativa=${receiveCount}): ${String(error)}; ` +
-          "deixando a fila aplicar a política de redrive.",
-      );
+    await runWithCorrelation({ correlationId: randomUUID(), causationId: undefined }, async () => {
+      let envelope: WagerTransactionRequestedMessageDto;
+      try {
+        envelope = await this.parseEnvelope(message.Body);
+      } catch (error) {
+        this.logger.error(
+          `Mensagem malformada (sqsMessageId=${sqsMessageId}, tentativa=${receiveCount}): ${String(error)}; ` +
+            "deixando a fila aplicar a política de redrive.",
+          { sqsMessageId, receiveCount },
+        );
+        return;
+      }
+
+      const messageId = envelope.messageId;
+      const correlationStore = currentCorrelationStore();
+      if (correlationStore !== undefined) {
+        correlationStore.causationId = messageId;
+      }
+
+      try {
+        await this.submitWagerTransactionUseCase.execute({
+          idempotencyKey: envelope.data.idempotencyKey,
+          providerId: envelope.data.providerId,
+          externalTransactionId: envelope.data.externalTransactionId,
+          playerId: envelope.data.playerId,
+          walletId: envelope.data.walletId,
+          roundId: envelope.data.roundId,
+          gameId: envelope.data.gameId,
+          kind: envelope.data.kind,
+          money: envelope.data.money,
+          referenceExternalTransactionId: envelope.data.referenceExternalTransactionId,
+          correlationId: currentCorrelationId(),
+          causationId: currentCausationId(),
+          inbox: { consumerName: WAGER_TRANSACTIONS_CONSUMER_NAME, messageId },
+        });
+        this.crashIfInjected(messageId);
+        await this.ack(queueUrl, receiptHandle);
+      } catch (error) {
+        await this.handleExecutionError(queueUrl, receiptHandle, messageId, receiveCount, error);
+      }
+    });
+  }
+
+  private crashIfInjected(messageId: string): void {
+    if (process.env.WAGER_CONSUMER_CRASH_AFTER_COMMIT !== "1") {
       return;
     }
-
-    const messageId = envelope.messageId;
-    try {
-      await this.submitWagerTransactionUseCase.execute({
-        idempotencyKey: envelope.data.idempotencyKey,
-        providerId: envelope.data.providerId,
-        externalTransactionId: envelope.data.externalTransactionId,
-        playerId: envelope.data.playerId,
-        walletId: envelope.data.walletId,
-        roundId: envelope.data.roundId,
-        gameId: envelope.data.gameId,
-        kind: envelope.data.kind,
-        money: envelope.data.money,
-        referenceExternalTransactionId: envelope.data.referenceExternalTransactionId,
-        inbox: { consumerName: WAGER_TRANSACTIONS_CONSUMER_NAME, messageId },
-      });
-      await this.ack(queueUrl, receiptHandle);
-    } catch (error) {
-      await this.handleExecutionError(queueUrl, receiptHandle, messageId, receiveCount, error);
-    }
+    this.logger.error(
+      `Crash injetado por WAGER_CONSUMER_CRASH_AFTER_COMMIT após commit de messageId=${messageId}, antes do ack.`,
+      { messageId },
+    );
+    process.exit(1);
   }
 
   private async handleExecutionError(
@@ -143,16 +175,19 @@ export class WagerTransactionsConsumer implements OnApplicationBootstrap, OnModu
     if (error instanceof DomainHttpException) {
       this.logger.warn(
         `Rejeição de negócio ao processar messageId=${messageId}: ${error.message}; confirmando mensagem.`,
+        { messageId, receiveCount },
       );
       await this.ack(queueUrl, receiptHandle);
       return;
     }
 
     if (isTransientTransactionError(error)) {
+      this.metrics.recordRetry("consumer_transient");
       const delaySeconds = transientBackoffSeconds(receiveCount);
       this.logger.warn(
         `Erro transitório ao processar messageId=${messageId} (tentativa ${receiveCount}); ` +
           `reagendando visibilidade em ${delaySeconds}s.`,
+        { messageId, receiveCount, delaySeconds },
       );
       await this.changeVisibility(queueUrl, receiptHandle, delaySeconds);
       return;
@@ -161,6 +196,7 @@ export class WagerTransactionsConsumer implements OnApplicationBootstrap, OnModu
     this.logger.error(
       `Erro ao processar messageId=${messageId} (tentativa ${receiveCount}): ${String(error)}; ` +
         "deixando a fila aplicar a política de redrive.",
+      { messageId, receiveCount },
     );
   }
 
