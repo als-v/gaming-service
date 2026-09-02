@@ -105,10 +105,54 @@ describe("WagerTransaction", () => {
         referenceExternalTransactionId: "external-ref-1",
       }),
     );
-    transaction.markPendingReference();
+    transaction.markPendingReference(new Date());
     expect(transaction.status).toBe(WagerTransactionStatus.PendingReference);
     transaction.markProcessed(randomUUID(), new Date());
     expect(transaction.status).toBe(WagerTransactionStatus.Processed);
+  });
+
+  it("markPendingReference agenda o primeiro recheck em 1 minuto e zera as tentativas", () => {
+    const now = new Date("2026-01-01T00:00:00.000Z");
+    const transaction = WagerTransaction.create(
+      baseProps({
+        kind: WagerTransactionKind.Refund,
+        referenceExternalTransactionId: "external-ref-1",
+      }),
+    );
+    transaction.markPendingReference(now);
+    expect(transaction.referenceCheckAttempts).toBe(0);
+    expect(transaction.nextReferenceCheckAt).toEqual(new Date("2026-01-01T00:01:00.000Z"));
+  });
+
+  it("recordFailedReferenceCheck reagenda com backoff crescente até esgotar as tentativas e então rejeita com REFERENCE_TIMEOUT", () => {
+    const now = new Date("2026-01-01T00:00:00.000Z");
+    const transaction = WagerTransaction.create(
+      baseProps({
+        kind: WagerTransactionKind.Refund,
+        referenceExternalTransactionId: "external-ref-1",
+      }),
+    );
+    transaction.markPendingReference(now);
+
+    const expectedDelaysMs = [300_000, 900_000, 1_800_000, 3_600_000];
+    for (const delayMs of expectedDelaysMs) {
+      transaction.recordFailedReferenceCheck(now);
+      expect(transaction.status).toBe(WagerTransactionStatus.PendingReference);
+      expect(transaction.nextReferenceCheckAt).toEqual(new Date(now.getTime() + delayMs));
+    }
+
+    transaction.recordFailedReferenceCheck(now);
+    expect(transaction.status).toBe(WagerTransactionStatus.Rejected);
+    expect(transaction.failureCode).toBe(FailureCode.ReferenceTimeout);
+    expect(transaction.referenceCheckAttempts).toBe(5);
+    expect(transaction.nextReferenceCheckAt).toBeUndefined();
+  });
+
+  it("recordFailedReferenceCheck fora de PENDING_REFERENCE lança InvalidTransactionStateError", () => {
+    const transaction = WagerTransaction.create(baseProps());
+    expect(() => transaction.recordFailedReferenceCheck(new Date())).toThrow(
+      InvalidTransactionStateError,
+    );
   });
 
   it("fail transiciona PENDING -> FAILED", () => {
@@ -125,11 +169,11 @@ describe("WagerTransaction", () => {
         referenceExternalTransactionId: "external-ref-1",
       }),
     );
-    transaction.markPendingReference();
+    transaction.markPendingReference(new Date());
     expect(() => transaction.fail(FailureCode.TransientInfrastructureFailure)).toThrow(
       InvalidTransactionStateError,
     );
-    expect(() => transaction.markPendingReference()).toThrow(InvalidTransactionStateError);
+    expect(() => transaction.markPendingReference(new Date())).toThrow(InvalidTransactionStateError);
   });
 
   it.each([
@@ -157,7 +201,7 @@ describe("WagerTransaction", () => {
       expect(() => transaction.fail(FailureCode.InternalError)).toThrow(
         InvalidTransactionStateError,
       );
-      expect(() => transaction.markPendingReference()).toThrow(InvalidTransactionStateError);
+      expect(() => transaction.markPendingReference(new Date())).toThrow(InvalidTransactionStateError);
     },
   );
 

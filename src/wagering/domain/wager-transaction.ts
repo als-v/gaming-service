@@ -43,6 +43,21 @@ export interface WagerTransactionState {
   referenceTransactionId: string | undefined;
   failureCode: FailureCode | undefined;
   processedAt: Date | undefined;
+  referenceCheckAttempts: number;
+  nextReferenceCheckAt: Date | undefined;
+}
+
+export const REFERENCE_RECHECK_DELAYS_MS: readonly number[] = [
+  60_000, 300_000, 900_000, 1_800_000, 3_600_000,
+];
+export const MAX_REFERENCE_CHECK_ATTEMPTS = REFERENCE_RECHECK_DELAYS_MS.length;
+
+function referenceRecheckDelayMs(attempt: number): number {
+  const delay = REFERENCE_RECHECK_DELAYS_MS[attempt];
+  if (delay === undefined) {
+    throw new RangeError(`Nenhum atraso de recheck de referência configurado para a tentativa ${attempt}.`);
+  }
+  return delay;
 }
 
 const VALID_TRANSITIONS: Readonly<
@@ -94,6 +109,8 @@ export class WagerTransaction {
     private _referenceTransactionId: string | undefined,
     private _failureCode: FailureCode | undefined,
     private _processedAt: Date | undefined,
+    private _referenceCheckAttempts: number,
+    private _nextReferenceCheckAt: Date | undefined,
   ) {}
 
   static create(props: CreateWagerTransactionProps): WagerTransaction {
@@ -121,6 +138,8 @@ export class WagerTransaction {
       undefined,
       undefined,
       undefined,
+      0,
+      undefined,
     );
   }
 
@@ -143,6 +162,8 @@ export class WagerTransaction {
       state.referenceTransactionId,
       state.failureCode,
       state.processedAt,
+      state.referenceCheckAttempts,
+      state.nextReferenceCheckAt,
     );
   }
 
@@ -162,6 +183,14 @@ export class WagerTransaction {
     return this._processedAt;
   }
 
+  get referenceCheckAttempts(): number {
+    return this._referenceCheckAttempts;
+  }
+
+  get nextReferenceCheckAt(): Date | undefined {
+    return this._nextReferenceCheckAt;
+  }
+
   markProcessed(referenceTransactionId: string | undefined, at: Date): void {
     this.assertTransition(WagerTransactionStatus.Processed);
     this._status = WagerTransactionStatus.Processed;
@@ -169,9 +198,25 @@ export class WagerTransaction {
     this._processedAt = at;
   }
 
-  markPendingReference(): void {
+  markPendingReference(now: Date): void {
     this.assertTransition(WagerTransactionStatus.PendingReference);
     this._status = WagerTransactionStatus.PendingReference;
+    this._referenceCheckAttempts = 0;
+    this._nextReferenceCheckAt = new Date(now.getTime() + referenceRecheckDelayMs(0));
+  }
+
+  recordFailedReferenceCheck(now: Date): void {
+    if (this._status !== WagerTransactionStatus.PendingReference) {
+      throw new InvalidTransactionStateError(this._status, WagerTransactionStatus.PendingReference);
+    }
+    const attemptNumber = this._referenceCheckAttempts + 1;
+    this._referenceCheckAttempts = attemptNumber;
+    if (attemptNumber >= MAX_REFERENCE_CHECK_ATTEMPTS) {
+      this._nextReferenceCheckAt = undefined;
+      this.reject(FailureCode.ReferenceTimeout);
+      return;
+    }
+    this._nextReferenceCheckAt = new Date(now.getTime() + referenceRecheckDelayMs(attemptNumber));
   }
 
   reject(code: FailureCode): void {

@@ -30,6 +30,9 @@ import { WagerTransactionProcessed } from "../../shared/events/wager-transaction
 import { WagerTransactionRejected } from "../../shared/events/wager-transaction-rejected.event.js";
 import { WalletBalanceChanged } from "../../shared/events/wallet-balance-changed.event.js";
 import { canonicalJsonStringify, sha256Hex } from "../../shared/hashing/payload-hash.js";
+import { InboxMessage } from "../../shared/messaging/inbox-message.js";
+import { InboxMessageEntity } from "../../shared/messaging/infrastructure/persistence/inbox-message.entity.js";
+import { InboxMessageMapper } from "../../shared/messaging/infrastructure/persistence/inbox-message.mapper.js";
 import { OutboxMessageEntity } from "../../shared/messaging/infrastructure/persistence/outbox-message.entity.js";
 import { OutboxMessageMapper } from "../../shared/messaging/infrastructure/persistence/outbox-message.mapper.js";
 import { OutboxMessage } from "../../shared/messaging/outbox-message.js";
@@ -48,6 +51,11 @@ import { WagerTransaction } from "../domain/wager-transaction.js";
 import { WagerTransactionEntity } from "../infrastructure/persistence/wager-transaction.entity.js";
 import { WagerTransactionMapper } from "../infrastructure/persistence/wager-transaction.mapper.js";
 
+export interface SubmitWagerTransactionInboxProps {
+  consumerName: string;
+  messageId: string;
+}
+
 export interface SubmitWagerTransactionCommand {
   idempotencyKey: string;
   providerId: string;
@@ -61,6 +69,7 @@ export interface SubmitWagerTransactionCommand {
   referenceExternalTransactionId: string | undefined;
   correlationId?: string;
   causationId?: string;
+  inbox?: SubmitWagerTransactionInboxProps;
 }
 
 export interface SubmitWagerTransactionResult {
@@ -105,26 +114,16 @@ export class SubmitWagerTransactionUseCase {
 
   async execute(command: SubmitWagerTransactionCommand): Promise<SubmitWagerTransactionResult> {
     let result: SubmitWagerTransactionResult;
-    let attempt = 0;
-    for (;;) {
-      attempt += 1;
-      try {
-        result = await this.dataSource.transaction((manager) => this.run(manager, command));
-        break;
-      } catch (error) {
-        if (isUniqueViolation(error, "UQ_wager_transactions_reference_kind_processed")) {
-          throw new ReferenceAlreadyUsedException(command.referenceExternalTransactionId ?? "");
-        }
-        if (isTransientTransactionError(error) && attempt < MAX_TRANSIENT_RETRY_ATTEMPTS) {
-          this.logger.warn(
-            `Retentando transação após erro transitório do Postgres na wallet "${command.walletId}" ` +
-              `(tentativa ${attempt}/${MAX_TRANSIENT_RETRY_ATTEMPTS}, code=${postgresErrorCodeOf(error) ?? "unknown"}).`,
-          );
-          await delay(transientRetryDelay(attempt));
-          continue;
-        }
-        throw error;
+    try {
+      result = await this.runInTransaction(
+        (manager) => this.run(manager, command),
+        `wallet "${command.walletId}"`,
+      );
+    } catch (error) {
+      if (isUniqueViolation(error, "UQ_wager_transactions_reference_kind_processed")) {
+        throw new ReferenceAlreadyUsedException(command.referenceExternalTransactionId ?? "");
       }
+      throw error;
     }
 
     if (
@@ -136,12 +135,136 @@ export class SubmitWagerTransactionUseCase {
     return result;
   }
 
+  async retryDueReferences(now: Date = new Date(), batchSize = 20): Promise<number> {
+    const dueIds = await this.findDuePendingReferenceIds(now, batchSize);
+    let advanced = 0;
+    for (const id of dueIds) {
+      if (await this.retryOnePendingReference(id, now)) {
+        advanced += 1;
+      }
+    }
+    return advanced;
+  }
+
+  private async runInTransaction<T>(
+    operation: (manager: EntityManager) => Promise<T>,
+    context: string,
+  ): Promise<T> {
+    let attempt = 0;
+    for (;;) {
+      attempt += 1;
+      try {
+        return await this.dataSource.transaction(operation);
+      } catch (error) {
+        if (isTransientTransactionError(error) && attempt < MAX_TRANSIENT_RETRY_ATTEMPTS) {
+          this.logger.warn(
+            `Retentando transação após erro transitório do Postgres em ${context} ` +
+              `(tentativa ${attempt}/${MAX_TRANSIENT_RETRY_ATTEMPTS}, code=${postgresErrorCodeOf(error) ?? "unknown"}).`,
+          );
+          await delay(transientRetryDelay(attempt));
+          continue;
+        }
+        throw error;
+      }
+    }
+  }
+
+  private async findDuePendingReferenceIds(now: Date, limit: number): Promise<string[]> {
+    const rows = await this.dataSource
+      .createQueryBuilder(WagerTransactionEntity, "t")
+      .select('t.id', "id")
+      .where("t.status = :status", { status: WagerTransactionStatus.PendingReference })
+      .andWhere("(t.next_reference_check_at IS NULL OR t.next_reference_check_at <= :now)", { now })
+      .orderBy("t.created_at", "ASC")
+      .limit(limit)
+      .getRawMany<{ id: string }>();
+    return rows.map((row) => row.id);
+  }
+
+  private async retryOnePendingReference(id: string, now: Date): Promise<boolean> {
+    try {
+      return await this.runInTransaction(
+        (manager) => this.attemptReferenceResolution(manager, id, now),
+        `resolução de referência pendente "${id}"`,
+      );
+    } catch (error) {
+      if (isUniqueViolation(error, "UQ_wager_transactions_reference_kind_processed")) {
+        this.logger.warn(
+          `Referência já utilizada por outra transação concorrente ao tentar resolver "${id}"; ignorando.`,
+        );
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  private async attemptReferenceResolution(
+    manager: EntityManager,
+    id: string,
+    now: Date,
+  ): Promise<boolean> {
+    const wagerTransactionRepository = manager.getRepository(WagerTransactionEntity);
+
+    const entity = await wagerTransactionRepository.findOne({
+      where: { id },
+      lock: { mode: "pessimistic_write", onLocked: "skip_locked" },
+    });
+    if (entity === null || entity.status !== WagerTransactionStatus.PendingReference) {
+      return false;
+    }
+
+    const transaction = WagerTransactionMapper.toDomain(entity);
+    const referenceExternalTransactionId = transaction.referenceExternalTransactionId as string;
+    const ctx: EventContext = {
+      eventId: randomUUID(),
+      correlationId: randomUUID(),
+      causationId: transaction.id,
+      occurredAt: now,
+    };
+
+    const referenceEntity = await manager.getRepository(WagerTransactionEntity).findOne({
+      where: { providerId: transaction.providerId, externalTransactionId: referenceExternalTransactionId },
+    });
+
+    if (referenceEntity === null) {
+      transaction.recordFailedReferenceCheck(now);
+      await wagerTransactionRepository.update(transaction.id, WagerTransactionMapper.toPersistence(transaction));
+      if (transaction.status === WagerTransactionStatus.Rejected) {
+        await this.enqueue(manager, WagerTransactionRejected.from(transaction, ctx));
+      }
+      return true;
+    }
+
+    const candidate = WagerTransactionMapper.toDomain(referenceEntity);
+    const mismatchCode = this.validateReferenceFields(transaction, candidate, {
+      playerId: transaction.playerId,
+      walletId: transaction.walletId,
+      roundId: transaction.roundId,
+    });
+    if (mismatchCode !== undefined) {
+      transaction.reject(mismatchCode);
+      await wagerTransactionRepository.update(transaction.id, WagerTransactionMapper.toPersistence(transaction));
+      await this.enqueue(manager, WagerTransactionRejected.from(transaction, ctx));
+      return true;
+    }
+
+    await this.finalizeTransaction(manager, transaction, candidate, ctx, now);
+    return true;
+  }
+
   private async run(
     manager: EntityManager,
     command: SubmitWagerTransactionCommand,
   ): Promise<SubmitWagerTransactionResult> {
     const now = new Date();
     const payloadHash = buildPayloadHash(command);
+
+    if (command.inbox !== undefined) {
+      const alreadyHandled = await this.tryClaimInboxMessage(manager, command.inbox, payloadHash, now);
+      if (alreadyHandled) {
+        return this.handleReplay(manager, command, payloadHash);
+      }
+    }
 
     let transaction: WagerTransaction;
     try {
@@ -197,7 +320,7 @@ export class SubmitWagerTransactionUseCase {
       });
 
       if (referenceEntity === null) {
-        transaction.markPendingReference();
+        transaction.markPendingReference(now);
         await wagerTransactionRepository.update(
           transaction.id,
           WagerTransactionMapper.toPersistence(transaction),
@@ -232,8 +355,20 @@ export class SubmitWagerTransactionUseCase {
       referenceTransaction = referenceEntity === null ? undefined : WagerTransactionMapper.toDomain(referenceEntity);
     }
 
+    return this.finalizeTransaction(manager, transaction, referenceTransaction, ctx, now);
+  }
+
+  private async finalizeTransaction(
+    manager: EntityManager,
+    transaction: WagerTransaction,
+    referenceTransaction: WagerTransaction | undefined,
+    ctx: EventContext,
+    now: Date,
+  ): Promise<SubmitWagerTransactionResult> {
+    const wagerTransactionRepository = manager.getRepository(WagerTransactionEntity);
+
     const walletEntity = await manager.getRepository(WalletEntity).findOne({
-      where: { id: command.walletId },
+      where: { id: transaction.walletId },
       lock: { mode: "for_no_key_update" },
     });
 
@@ -325,13 +460,13 @@ export class SubmitWagerTransactionUseCase {
   private validateReferenceFields(
     transaction: WagerTransaction,
     reference: WagerTransaction,
-    command: SubmitWagerTransactionCommand,
+    expected: Pick<SubmitWagerTransactionCommand, "playerId" | "walletId" | "roundId">,
   ): FailureCode | undefined {
     if (
       reference.status !== WagerTransactionStatus.Processed ||
-      reference.playerId !== command.playerId ||
-      reference.walletId !== command.walletId ||
-      reference.roundId !== command.roundId ||
+      reference.playerId !== expected.playerId ||
+      reference.walletId !== expected.walletId ||
+      reference.roundId !== expected.roundId ||
       !reference.money.equals(transaction.money)
     ) {
       return FailureCode.ReferenceMismatch;
@@ -346,6 +481,33 @@ export class SubmitWagerTransactionUseCase {
     }
 
     return undefined;
+  }
+
+  private async tryClaimInboxMessage(
+    manager: EntityManager,
+    inbox: SubmitWagerTransactionInboxProps,
+    payloadHash: string,
+    now: Date,
+  ): Promise<boolean> {
+    const message = InboxMessage.receive({
+      messageId: inbox.messageId,
+      consumerName: inbox.consumerName,
+      payloadHash,
+      receivedAt: now,
+    });
+    message.markProcessed(now);
+
+    try {
+      await manager.transaction(async (nested) => {
+        await nested.getRepository(InboxMessageEntity).insert(InboxMessageMapper.toPersistence(message));
+      });
+      return false;
+    } catch (error) {
+      if (!isUniqueViolation(error, "PK_inbox_messages")) {
+        throw error;
+      }
+      return true;
+    }
   }
 
   private async isReferenceAlreadyUsed(

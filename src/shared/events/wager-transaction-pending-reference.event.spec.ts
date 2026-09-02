@@ -29,7 +29,7 @@ function refundTransaction(): WagerTransaction {
 describe("WagerTransactionPendingReference", () => {
   it("from monta o evento a partir de uma transação PENDING_REFERENCE", () => {
     const transaction = refundTransaction();
-    transaction.markPendingReference();
+    transaction.markPendingReference(new Date());
 
     const event = WagerTransactionPendingReference.from(transaction, {
       eventId: randomUUID(),

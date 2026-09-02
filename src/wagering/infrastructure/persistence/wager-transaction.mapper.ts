@@ -23,6 +23,8 @@ export class WagerTransactionMapper {
       referenceTransactionId: entity.referenceTransactionId ?? undefined,
       failureCode: (entity.failureCode ?? undefined) as FailureCode | undefined,
       processedAt: entity.processedAt ?? undefined,
+      referenceCheckAttempts: entity.referenceCheckAttempts,
+      nextReferenceCheckAt: entity.nextReferenceCheckAt ?? undefined,
     });
   }
 
@@ -46,6 +48,8 @@ export class WagerTransactionMapper {
     entity.referenceTransactionId = transaction.referenceTransactionId ?? null;
     entity.failureCode = transaction.failureCode ?? null;
     entity.processedAt = transaction.processedAt ?? null;
+    entity.referenceCheckAttempts = transaction.referenceCheckAttempts;
+    entity.nextReferenceCheckAt = transaction.nextReferenceCheckAt ?? null;
     return entity;
   }
 }

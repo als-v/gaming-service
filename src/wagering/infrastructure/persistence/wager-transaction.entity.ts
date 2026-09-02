@@ -65,4 +65,10 @@ export class WagerTransactionEntity {
 
   @Column({ name: "processed_at", type: "timestamptz", nullable: true })
   processedAt!: Date | null;
+
+  @Column({ name: "reference_check_attempts", type: "integer", default: 0 })
+  referenceCheckAttempts!: number;
+
+  @Column({ name: "next_reference_check_at", type: "timestamptz", nullable: true })
+  nextReferenceCheckAt!: Date | null;
 }
