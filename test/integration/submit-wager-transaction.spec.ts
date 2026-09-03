@@ -136,6 +136,51 @@ describe("SubmitWagerTransactionUseCase com Postgres real (etapa 5 — Definitio
     expect(transactions).toHaveLength(1);
   });
 
+  it(
+    "replay de uma transação PROCESSED devolve o saldo observado no momento do processamento " +
+      "original, não o saldo atual da wallet (regra 7)",
+    async () => {
+      const walletId = await seedWallet("100.00");
+      const playerId = randomUUID();
+      const betCommand = {
+        idempotencyKey: `provider-a:${randomUUID()}`,
+        providerId: "provider-a",
+        externalTransactionId: randomUUID(),
+        playerId,
+        walletId,
+        roundId: "round-1",
+        gameId: "game-1",
+        kind: "BET" as const,
+        money: { amount: "80.00", currency: "BRL" },
+        referenceExternalTransactionId: undefined,
+      };
+
+      const betResult = await useCase.execute(betCommand);
+      expect(betResult.idempotentReplay).toBe(false);
+      expect(betResult.walletBalance.amount).toBe("20.00");
+
+      await useCase.execute({
+        idempotencyKey: `provider-a:${randomUUID()}`,
+        providerId: "provider-a",
+        externalTransactionId: randomUUID(),
+        playerId,
+        walletId,
+        roundId: "round-1",
+        gameId: "game-1",
+        kind: "WIN",
+        money: { amount: "50.00", currency: "BRL" },
+        referenceExternalTransactionId: undefined,
+      });
+
+      const walletEntity = await dataSource.getRepository(WalletEntity).findOneByOrFail({ id: walletId });
+      expect(walletEntity.balanceAmount).toBe("70.00");
+
+      const betReplay = await useCase.execute(betCommand);
+      expect(betReplay.idempotentReplay).toBe(true);
+      expect(betReplay.walletBalance.amount).toBe("20.00");
+    },
+  );
+
   it("duas wallets diferentes processadas em paralelo não se bloqueiam entre si (lock por linha, não global)", async () => {
     const walletIdA = await seedWallet("100.00");
     const walletIdB = await seedWallet("100.00");

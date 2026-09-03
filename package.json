@@ -21,7 +21,9 @@
     "lint": "eslint \"src/**/*.ts\" \"test/**/*.ts\" \"scripts/**/*.ts\"",
     "lint:fix": "eslint \"src/**/*.ts\" \"test/**/*.ts\" \"scripts/**/*.ts\" --fix",
     "format": "prettier --write \"src/**/*.ts\" \"test/**/*.ts\" \"scripts/**/*.ts\"",
-    "test:load": "bun run scripts/load-test.ts"
+    "test:load": "bun run scripts/load-test.ts",
+    "bootstrap": "bun run scripts/bootstrap.ts",
+    "fleet": "bun run scripts/fleet.ts"
   },
   "dependencies": {
     "@aws-sdk/client-sqs": "^3.1124.0",

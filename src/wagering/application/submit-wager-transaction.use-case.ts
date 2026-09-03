@@ -562,12 +562,24 @@ export class SubmitWagerTransactionUseCase {
       throw new IdempotencyConflictException(command.idempotencyKey);
     }
 
-    const walletEntity = await manager
-      .getRepository(WalletEntity)
-      .findOne({ where: { id: existing.walletId } });
-    const balance = walletEntity === null ? undefined : WalletMapper.toDomain(walletEntity).balance.toJSON();
+    const ledgerEntry = await manager
+      .getRepository(WalletLedgerEntryEntity)
+      .findOne({ where: { transactionId: existing.id } });
+
+    const balance =
+      ledgerEntry === null
+        ? await this.currentWalletBalance(manager, existing.walletId)
+        : { amount: ledgerEntry.balanceAfterValue, currency: ledgerEntry.currency };
 
     return this.toResult(existing, balance, true);
+  }
+
+  private async currentWalletBalance(
+    manager: EntityManager,
+    walletId: string,
+  ): Promise<MoneyProps | undefined> {
+    const walletEntity = await manager.getRepository(WalletEntity).findOne({ where: { id: walletId } });
+    return walletEntity === null ? undefined : WalletMapper.toDomain(walletEntity).balance.toJSON();
   }
 
   private toResult(

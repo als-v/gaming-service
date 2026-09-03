@@ -1,0 +1,180 @@
+{
+  "info": {
+    "name": "gaming-service",
+    "description": "Rotas HTTP definidas em src/**/*.controller.ts do gaming-service.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    { "key": "baseUrl", "value": "http://localhost:3000" },
+    { "key": "walletId", "value": "" },
+    { "key": "transactionId", "value": "" },
+    { "key": "providerId", "value": "provider-a" },
+    { "key": "externalTransactionId", "value": "" },
+    { "key": "idempotencyKey", "value": "" }
+  ],
+  "item": [
+    {
+      "name": "Wallets",
+      "item": [
+        {
+          "name": "POST /wallets",
+          "request": {
+            "method": "POST",
+            "header": [{ "key": "Content-Type", "value": "application/json" }],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"playerId\": \"{{$guid}}\",\n  \"initialBalance\": {\n    \"amount\": \"100.00\",\n    \"currency\": \"BRL\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/wallets",
+              "host": ["{{baseUrl}}"],
+              "path": ["wallets"]
+            }
+          }
+        },
+        {
+          "name": "GET /wallets/:walletId",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/wallets/:walletId",
+              "host": ["{{baseUrl}}"],
+              "path": ["wallets", ":walletId"],
+              "variable": [{ "key": "walletId", "value": "{{walletId}}" }]
+            }
+          }
+        },
+        {
+          "name": "GET /wallets/:walletId/ledger",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/wallets/:walletId/ledger?limit=50",
+              "host": ["{{baseUrl}}"],
+              "path": ["wallets", ":walletId", "ledger"],
+              "query": [
+                { "key": "limit", "value": "50" },
+                { "key": "cursor", "value": "", "disabled": true }
+              ],
+              "variable": [{ "key": "walletId", "value": "{{walletId}}" }]
+            }
+          }
+        },
+        {
+          "name": "POST /wallets/:walletId/reconciliation",
+          "request": {
+            "method": "POST",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/wallets/:walletId/reconciliation",
+              "host": ["{{baseUrl}}"],
+              "path": ["wallets", ":walletId", "reconciliation"],
+              "variable": [{ "key": "walletId", "value": "{{walletId}}" }]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Wagering Transactions",
+      "item": [
+        {
+          "name": "POST /wagering/transactions",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "{{idempotencyKey}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"providerId\": \"provider-a\",\n  \"externalTransactionId\": \"{{$guid}}\",\n  \"playerId\": \"{{$guid}}\",\n  \"walletId\": \"{{walletId}}\",\n  \"roundId\": \"round-1\",\n  \"gameId\": \"game-1\",\n  \"kind\": \"BET\",\n  \"money\": {\n    \"amount\": \"10.00\",\n    \"currency\": \"BRL\"\n  }\n}"
+            },
+            "url": {
+              "raw": "{{baseUrl}}/wagering/transactions",
+              "host": ["{{baseUrl}}"],
+              "path": ["wagering", "transactions"]
+            }
+          }
+        },
+        {
+          "name": "GET /wagering/transactions/:transactionId",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/wagering/transactions/:transactionId",
+              "host": ["{{baseUrl}}"],
+              "path": ["wagering", "transactions", ":transactionId"],
+              "variable": [{ "key": "transactionId", "value": "{{transactionId}}" }]
+            }
+          }
+        },
+        {
+          "name": "GET /providers/:providerId/wagering/transactions/:externalTransactionId",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/providers/:providerId/wagering/transactions/:externalTransactionId",
+              "host": ["{{baseUrl}}"],
+              "path": ["providers", ":providerId", "wagering", "transactions", ":externalTransactionId"],
+              "variable": [
+                { "key": "providerId", "value": "{{providerId}}" },
+                { "key": "externalTransactionId", "value": "{{externalTransactionId}}" }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Health",
+      "item": [
+        {
+          "name": "GET /health/live",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health/live",
+              "host": ["{{baseUrl}}"],
+              "path": ["health", "live"]
+            }
+          }
+        },
+        {
+          "name": "GET /health/ready",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/health/ready",
+              "host": ["{{baseUrl}}"],
+              "path": ["health", "ready"]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Observabilidade",
+      "item": [
+        {
+          "name": "GET /metrics",
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{baseUrl}}/metrics",
+              "host": ["{{baseUrl}}"],
+              "path": ["metrics"]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
