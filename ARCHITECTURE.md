@@ -1,6 +1,6 @@
 # Arquitetura — gaming-service
 
-Este documento consolida as decisões técnicas tomadas ao longo das 8 etapas de implementação (ver `../planejamento/*.md` para o plano original e `../ANALISE.md` para o histórico completo de revisão). Ele não reinventa nada: descreve o que foi de fato construído e por quê, incluindo os pontos em que a implementação divergiu do plano inicial com justificativa própria.
+Este documento consolida as decisões técnicas do `gaming-service`. Ele descreve o que foi de fato construído e por quê, incluindo os pontos em que a implementação adotou uma decisão técnica própria.
 
 ## Índice
 
@@ -19,22 +19,22 @@ Este documento consolida as decisões técnicas tomadas ao longo das 8 etapas de
 
 ## 1. Autenticação
 
-REQUISITOS.md, seção 2, vale **0 dos 100 pontos** e explicitamente permite não implementar, desde que a decisão seja documentada e o ponto de extensão fique explícito no código. Essa é a decisão tomada aqui (fechada em `ANALISE.md`, Adendo 1): **autenticação é um no-op deliberado**, não uma lacuna esquecida.
+A autenticação foi deixada como **no-op deliberado**, não como uma lacuna esquecida. A decisão mantém o ponto de extensão explícito no código para permitir substituição por autenticação real sem alterar o domínio.
 
 - `NoOpAuthGuard` (`src/shared/auth/no-op-auth.guard.ts`) implementa `CanActivate` e sempre retorna `true`. É o único guard de autenticação registrado hoje.
 - `ProviderIdentityPort` (`src/shared/auth/provider-identity.port.ts`) é a porta que separaria "quem está autenticado" de "qual `providerId` o caso de uso deve usar". `NoOpProviderIdentityAdapter` implementa essa porta retornando sempre `undefined` — o `providerId` usado nas transações vem do corpo da requisição, não de um token.
 - O controller (`WagerTransactionsController`) já injeta `PROVIDER_IDENTITY_PORT` e chama `currentProviderId()` no fluxo de submissão, mesmo hoje sem usar o retorno para nada crítico — o ponto de chamada existe exatamente onde a substituição por uma implementação real entraria, sem precisar tocar no use case.
 
-**Desenho que seria adotado em produção** (não implementado, apenas descrito, como o enunciado permite):
+**Desenho que seria adotado em produção**:
 
-- Um Identity Provider externo compatível com OIDC — Keycloak ou Zitadel, ambas citadas no enunciado — emitindo JWTs para cada provedor de apostas.
+- Um Identity Provider externo compatível com OIDC emitindo JWTs para cada provedor.
 - Um `AuthGuard` real substituindo o `NoOpAuthGuard`, validando assinatura/expiração do JWT na borda (via `JwksClient` ou biblioteca equivalente) e anexando os claims validados à requisição.
 - Uma implementação real de `ProviderIdentityPort` (ex. `JwtProviderIdentityAdapter`) traduzindo os claims validados (ex. `sub`, ou uma claim customizada `provider_id`) para o `providerId` que os casos de uso já esperam — sem que `SubmitWagerTransactionUseCase` precise saber que a fonte da identidade mudou.
 - A troca seria feita inteiramente na camada de infraestrutura (`AuthModule`), trocando os providers do binding do Nest (`{ provide: PROVIDER_IDENTITY_PORT, useClass: JwtProviderIdentityAdapter }`) — nenhuma mudança de contrato no domínio ou na aplicação.
 
 ## 2. ORM e persistência
 
-**TypeORM** foi a escolha (Prisma está explicitamente fora de escopo pelo enunciado).
+**TypeORM** foi a escolha.
 
 Motivos:
 
@@ -50,11 +50,11 @@ Como a transação foi implementada: cada caso de uso que produz efeito financei
 
 Por que pessimista, dado o timebox de 2 dias:
 
-- O enunciado (seção 8) definiu a unidade de concorrência como a `walletId` e exige correção sob disputa real de saldo — não apenas "não corromper", mas produzir exatamente o resultado determinístico do cenário obrigatório (uma `PROCESSED`, uma `REJECTED`, saldo final exato, um único lançamento de débito).
+- A unidade de concorrência é a `walletId`, com correção sob disputa real de saldo — não apenas "não corromper", mas produzir um resultado determinístico (uma `PROCESSED`, uma `REJECTED`, saldo final exato, um único lançamento de débito).
 - Optimistic locking com retry (via coluna `version` e `UPDATE ... WHERE version = :v`) exigiria decidir, sob timebox curto, uma política de retry com backoff, um limite de tentativas e uma forma de comunicar "esgotou retries" ao chamador de forma consistente com o resto da taxonomia de falha — mais superfície de decisão e mais superfície de bug para o tempo disponível.
 - Pessimista com `SELECT FOR UPDATE`/`FOR NO KEY UPDATE` dá correção determinística e imediata: a segunda transação simplesmente espera a primeira liberar a linha, sem produzir um "conflito" que precise de retry explícito no caminho feliz — o custo é serializar escritas na mesma wallet, que é aceitável porque a unidade de concorrência já é por wallet (wallets diferentes continuam paralelas).
 
-**Achado de concorrência real e correção aplicada** (histórico completo em `ANALISE.md`, Adendo 6): a primeira versão usava `pessimistic_write` (`FOR UPDATE`) no lock da wallet. O `INSERT` da `wager_transaction`, por ter uma FK para `wallets.id`, faz o Postgres adquirir implicitamente um lock `FOR KEY SHARE` na linha da wallet **antes** do `SELECT FOR UPDATE` explícito do código. `FOR KEY SHARE` é compartilhável entre transações, mas **conflita com `FOR UPDATE`** — com 3 ou mais transações concorrentes na mesma wallet, formava-se um ciclo de espera genuíno e o Postgres derrubava uma delas com deadlock real (`40P01`), reproduzido ao vivo de forma determinística (10/10 com pool de conexões "quente"). A correção de causa raiz foi trocar `FOR UPDATE` por **`FOR NO KEY UPDATE`**, que não conflita com `FOR KEY SHARE` — a aplicação nunca altera a PK da wallet, então `FOR NO KEY UPDATE` dá a mesma garantia de exclusão mútua sem o conflito estrutural. Reverificado ao vivo com concorrência 2/5/10 em pool quente: 0 deadlocks em todos os casos após a correção.
+**Achado de concorrência real e correção aplicada**: a primeira versão usava `pessimistic_write` (`FOR UPDATE`) no lock da wallet. O `INSERT` da `wager_transaction`, por ter uma FK para `wallets.id`, faz o Postgres adquirir implicitamente um lock `FOR KEY SHARE` na linha da wallet **antes** do `SELECT FOR UPDATE` explícito do código. `FOR KEY SHARE` é compartilhável entre transações, mas **conflita com `FOR UPDATE`** — com 3 ou mais transações concorrentes na mesma wallet, formava-se um ciclo de espera genuíno e o Postgres derrubava uma delas com deadlock real (`40P01`), reproduzido ao vivo de forma determinística (10/10 com pool de conexões "quente"). A correção de causa principal foi trocar `FOR UPDATE` por **`FOR NO KEY UPDATE`**, que não conflita com `FOR KEY SHARE` — a aplicação nunca altera a PK da wallet, então `FOR NO KEY UPDATE` dá a mesma garantia de exclusão mútua sem o conflito estrutural. Reverificado ao vivo com concorrência 2/5/10 em pool quente: 0 deadlocks em todos os casos após a correção.
 
 **Defesa em profundidade**: um índice único parcial no banco —
 
@@ -64,9 +64,9 @@ CREATE UNIQUE INDEX "UQ_wager_transactions_reference_kind_processed"
   WHERE "status" = 'PROCESSED' AND "kind" IN ('REFUND', 'ROLLBACK')
 ```
 
-— garante, no próprio schema, que uma `BET` nunca pode ser revertida (`REFUND`/`ROLLBACK`) duas vezes, mesmo se algum caminho de código no futuro esquecer de checar isso antes de commitar. Isso não é a proteção principal (o lock pessimista já serializa o acesso), é uma rede de segurança independente do código de aplicação.
+— garante, no próprio schema, que uma mesma transação original nunca pode ser revertida (`REFUND`/`ROLLBACK`) duas vezes, mesmo se algum caminho de código no futuro esquecer de checar isso antes de commitar. Isso não é a proteção principal (o lock pessimista já serializa o acesso), é uma rede de segurança independente do código de aplicação.
 
-**Rede de segurança adicional — retry em erro transitório**: `isTransientTransactionError` reconhece `40P01` (deadlock) e `40001` (serialization failure) tanto em `error.code` quanto em `driverError.code`, e `SubmitWagerTransactionUseCase.runInTransaction` reexecuta a transação inteira (não só a query que falhou) até 8 vezes, com backoff linear + jitter (`20ms * tentativa + até 40ms aleatório`). Rebaixado explicitamente de "correção principal" para "rede de segurança" depois que a causa raiz foi eliminada estruturalmente — hoje qualquer disparo desse retry é logado em nível `warn` com `walletId`/código do erro, sinalizando uma fonte de deadlock ainda não mapeada, não um evento silencioso e esperado.
+**Rede de segurança adicional — retry em erro transitório**: `isTransientTransactionError` reconhece `40P01` (deadlock) e `40001` (serialization failure) tanto em `error.code` quanto em `driverError.code`, e `SubmitWagerTransactionUseCase.runInTransaction` reexecuta a transação inteira (não só a query que falhou) até 8 vezes, com backoff linear + jitter (`20ms * tentativa + até 40ms aleatório`). Rebaixado explicitamente de "correção principal" para "rede de segurança" depois que a causa principal foi eliminada estruturalmente — hoje qualquer disparo desse retry é logado em nível `warn` com `walletId`/código do erro, sinalizando uma fonte de deadlock ainda não mapeada, não um evento silencioso e esperado.
 
 ## 4. Idempotência
 
@@ -83,7 +83,7 @@ Em ambos os casos, o SHA-256 do payload é comparado, não o payload bruto — b
 
 **Publicação concorrente sem duplicar nem perder**: `OutboxPublisherWorker` roda em loop (`POLL_INTERVAL_MS = 1500`) e, a cada ciclo, abre uma transação, seleciona até `BATCH_SIZE = 10` linhas não publicadas e já devidas (`published_at IS NULL AND (next_attempt_at IS NULL OR next_attempt_at <= now)`, ordenadas por `occurred_at ASC`) com `SELECT ... FOR UPDATE SKIP LOCKED`, publica cada uma via `SendMessageCommand` (com `MessageDeduplicationId = message.id` e `MessageGroupId = message.aggregateId`, preservando ordem por wallet no FIFO) e marca `published_at`. `SKIP LOCKED` é o que permite **múltiplas instâncias do worker rodarem ao mesmo tempo contra a mesma tabela** sem duas delas pegarem a mesma linha — verificado ao vivo (Adendo 8): 24 eventos reais publicados por 2 workers concorrentes, 0 duplicatas, 0 perdas.
 
-**Backoff e TTL de `PENDING_REFERENCE`**: quando um `REFUND`/`ROLLBACK` chega antes da `BET` que referencia, a transação vai para `PENDING_REFERENCE` e é reavaliada por `PendingReferenceResolverWorker` a cada 30s, em lotes de 20 (`retryDueReferences(now, 20)`), ordenado pela mais antiga primeiro. Os atrasos entre tentativas são progressivos e definidos em `REFERENCE_RECHECK_DELAYS_MS`:
+**Backoff e TTL de `PENDING_REFERENCE`**: quando um `REFUND`/`ROLLBACK` chega antes da transação original que referencia, a transação vai para `PENDING_REFERENCE` e é reavaliada por `PendingReferenceResolverWorker` a cada 30s, em lotes de 20 (`retryDueReferences(now, 20)`), ordenado pela mais antiga primeiro. Os atrasos entre tentativas são progressivos e definidos em `REFERENCE_RECHECK_DELAYS_MS`:
 
 ```
 [60_000, 300_000, 900_000, 1_800_000, 3_600_000]  // 1min, 5min, 15min, 30min, 1h
@@ -91,7 +91,7 @@ Em ambos os casos, o SHA-256 do payload é comparado, não o payload bruto — b
 
 5 tentativas (`MAX_REFERENCE_CHECK_ATTEMPTS = REFERENCE_RECHECK_DELAYS_MS.length`), soma total ≈ 41 minutos antes de desistir. Justificativa dos valores: a progressão geométrica (aprox. ×5 a cada passo, com o último passo dobrando) cobre tanto o caso comum (mensagens fora de ordem por poucos segundos/minutos, resolvido já na 1ª ou 2ª tentativa) quanto uma falha de infraestrutura mais longa do provedor de origem (até ~40min), sem manter uma transação "pendurada" indefinidamente nem gastar um lote inteiro do worker em tentativas certamente inúteis logo de cara. Esgotadas as 5 tentativas, a transação é `REJECTED` com `failureCode = REFERENCE_TIMEOUT` e um evento `WagerTransactionRejected` é publicado — o mesmo caminho de rejeição usado em qualquer outra falha de negócio, sem caso especial.
 
-**Fila de eventos de saída** (decisão registrada em `ANALISE.md`, Adendo 7 — o plano original não definia para onde o outbox publicava): `wager-transaction-events.fifo` + `wager-transaction-events-dlq.fifo`, dedicada, separada da fila de comandos de entrada (`wager-transactions.fifo`) para não misturar schema/semântica de entrada e saída na mesma fila. FIFO com `ContentBasedDeduplication`, `MessageGroupId = walletId`, redrive para DLQ após 5 tentativas — mesmo padrão já usado na fila de comandos, sem reinventar uma segunda convenção.
+**Fila de eventos de saída**: `wager-transaction-events.fifo` + `wager-transaction-events-dlq.fifo`, dedicada, separada da fila de comandos de entrada (`wager-transactions.fifo`) para não misturar schema/semântica de entrada e saída na mesma fila. FIFO com `ContentBasedDeduplication`, `MessageGroupId = walletId`, redrive para DLQ após 5 tentativas — mesmo padrão já usado na fila de comandos, sem reinventar uma segunda convenção.
 
 **Consumer de comandos e SIGTERM**: `WagerTransactionsConsumer` faz long-polling (`WaitTimeSeconds = 20`), processa uma mensagem por vez via `SubmitWagerTransactionUseCase` (reaproveitando o inbox para dedupe), e só chama `DeleteMessageCommand` (ack) **depois** do commit da transação de negócio. Erros de negócio (`DomainHttpException`) são confirmados (ack) — não é um erro de infraestrutura, é uma rejeição legítima já persistida. Erros transitórios do Postgres (`40P01`/`40001`) reagendam a visibilidade da mensagem com backoff (`5s, 15s, 30s, 60s, 120s`, escalando por `ApproximateReceiveCount`) em vez de deixar a mensagem invisível até o timeout padrão. `onModuleDestroy` seta uma flag de parada e aborta o `ReceiveMessageCommand` em voo via `AbortController`, dando ao Nest (`enableShutdownHooks()`) uma janela para drenar a mensagem em processamento antes do `SIGTERM` virar `SIGKILL` do orquestrador.
 
@@ -108,7 +108,7 @@ WALLET_ALREADY_EXISTS             Tentativa de criar uma wallet com um id já ex
 WALLET_NOT_FOUND                  walletId referenciado não existe.
 TRANSACTION_NOT_FOUND             Transação consultada por id/externalTransactionId não existe.
 CURRENCY_MISMATCH                 Moeda da transação diverge da moeda da wallet ou da referência.
-INSUFFICIENT_BALANCE              BET/débito recusado por saldo insuficiente.
+INSUFFICIENT_BALANCE              Débito recusado por saldo insuficiente.
 REFERENCE_NOT_FOUND               (reservado) referência explicitamente não encontrada, fora do fluxo PENDING_REFERENCE.
 REFERENCE_MISMATCH                Referência existe, mas playerId/walletId/roundId/money não batem com a transação.
 REVERSAL_WOULD_OVERDRAW            ROLLBACK deixaria o saldo negativo.
@@ -147,7 +147,7 @@ Por que essa escolha em vez de `bigint` de centavos:
 
 ## 8. Diagramas
 
-### 8.1 Sequência — fluxo `BET` completo
+### 8.1 Sequência — fluxo de débito completo
 
 ```mermaid
 sequenceDiagram
@@ -193,7 +193,7 @@ stateDiagram-v2
 
     PENDING --> PROCESSED: markProcessed()<br/>(efeito aplicado com sucesso)
     PENDING --> REJECTED: reject(code)<br/>(saldo insuficiente, referência inválida, etc.)
-    PENDING --> PENDING_REFERENCE: markPendingReference()<br/>(REFUND/ROLLBACK sem BET correspondente ainda)
+    PENDING --> PENDING_REFERENCE: markPendingReference()<br/>(REFUND/ROLLBACK sem referência correspondente ainda)
     PENDING --> FAILED: fail(code)<br/>(ex. wallet não encontrada)
 
     PENDING_REFERENCE --> PROCESSED: referência resolvida<br/>(retryDueReferences)
@@ -275,15 +275,14 @@ Honestamente, dentro do timebox de 2 dias:
 
 - **Double-entry bookkeeping completo** (contrapartida em uma conta "house"/"casa" para cada lançamento) não foi implementado. O `wallet_ledger_entries` é auditável e append-only, mas de entrada única (só a perspectiva da wallet do jogador) — suficiente para provar `wallet.balance == saldo reconstruído pelo ledger` (a invariante exigida), mas não para uma contabilidade formal de dupla entrada com a casa.
 - **OpenTelemetry/tracing distribuído** não foi implementado — explicitamente opcional pela seção 12. O que existe (correlationId/causationId propagados via `AsyncLocalStorage` e presentes em todo log estruturado) cobre o caso de uso prático de "seguir uma transação através dos logs", mas não substitui spans/traces reais entre serviços.
-- **Autenticação real** não foi implementada — decisão fechada e justificada na seção 1 acima, vale 0 pontos pelo enunciado.
+- **Autenticação real** não foi implementada — decisão fechada e justificada na seção 1 acima.
 - **Purga/retenção de outbox publicado**: linhas de `outbox_messages` já publicadas nunca são removidas ou arquivadas. Para este desafio isso é inofensivo (volume baixo, sem requisito de retenção), mas cresceria indefinidamente em produção sem uma rotina de limpeza — não implementada.
-- **Higiene do ambiente de desenvolvimento compartilhado**: os testes de integração de outbox/pending-reference (`mensageria-outbox-inbox.spec.ts`) assumem implicitamente um banco/fila "razoavelmente limpos". Isso é verdade em CI efêmero, mas já causou falsos-negativos neste mesmo ambiente de desenvolvimento de longa duração quando poluído por verificações manuais/testes de carga repetidos (histórico completo em `ANALISE.md`, Adendo 9 e as duas correções seguintes). O teste foi corrigido para tolerar ruído da fila de eventos (deletar mensagens estranhas durante a varredura, convergir por timeout em vez de orçamento fixo de tentativas), mas a recomendação de isolar esse teste com schema/fila dedicados, ou truncar o backlog periodicamente, permanece como item de robustez para um próximo ciclo, não como pendência bloqueante desta entrega.
-- **Coleção Postman/Insomnia** (`docs/postman_collection.json`): item auto-imposto no plano da etapa 2 (não exigido por `REQUISITOS.md`, que não pontua isso), ainda não gerado. Não bloqueia nenhum dos 100 pontos da avaliação oficial (a seção 9 do próprio `REQUISITOS.md` já documenta contratos e exemplos de payload por endpoint), mas fica registrado aqui como item pendente de baixo risco para follow-up.
+- **Higiene do ambiente de desenvolvimento compartilhado**: os testes de integração de outbox/pending-reference (`mensageria-outbox-inbox.spec.ts`) assumem implicitamente um banco/fila "razoavelmente limpos". Isso é verdade em CI efêmero, mas já causou falsos-negativos neste mesmo ambiente de desenvolvimento de longa duração quando poluído por verificações manuais/testes de carga repetidos. O teste foi corrigido para tolerar ruído da fila de eventos (deletar mensagens estranhas durante a varredura, convergir por timeout em vez de orçamento fixo de tentativas), mas a recomendação de isolar esse teste com schema/fila dedicados, ou truncar o backlog periodicamente, permanece como item de robustez para um próximo ciclo, não como pendência bloqueante desta entrega.
 - **Cobertura de teste de unidade dos casos de uso "periféricos"**: `SubmitWagerTransactionUseCase` tem cobertura de integração extensa; `CreateWalletUseCase`, `GetWalletUseCase`, `GetWalletLedgerUseCase`, `GetWagerTransactionByIdUseCase`/`ByExternalIdUseCase` têm cobertura mais fina (a maior parte da complexidade e do risco do desafio está concentrada no caso de uso central, e o tempo foi alocado de acordo).
 
 ## 10. Resultado do teste de carga
 
-Teste de carga hand-rolled (não é um diferencial dispensado — foi de fato executado e medido), `scripts/load-test.ts`, exposto como `bun run test:load`. Metodologia: N wallets criadas com saldo inicial alto, C "providers" concorrentes disparando requisições HTTP reais contra a API por uma janela de tempo fixa, sorteando `BET`/`WIN`/`REFUND` com pesos 6/2/2 e valores aleatórios entre `1.00` e `50.00`; métricas do `/metrics` são lidas antes e depois para calcular o delta de conflitos de lock/retries/divergências durante a janela.
+Teste de carga hand-rolled (não é um diferencial dispensado — foi de fato executado e medido), `scripts/load-test.ts`, exposto como `bun run test:load`. Metodologia: N wallets criadas com saldo inicial alto, C "providers" concorrentes disparando requisições HTTP reais contra a API por uma janela de tempo fixa, sorteando débitos, créditos e estornos com pesos 6/2/2 e valores aleatórios entre `1.00` e `50.00`; métricas do `/metrics` são lidas antes e depois para calcular o delta de conflitos de lock/retries/divergências durante a janela.
 
 **Ambiente**: gaming-service (1 instância) + Postgres + LocalStack SQS locais, todos em containers Docker na mesma máquina de desenvolvimento (sem isolamento de recursos/benchmark de laboratório — os números abaixo caracterizam comportamento, não são um benchmark de capacidade).
 
@@ -299,4 +298,4 @@ Teste de carga hand-rolled (não é um diferencial dispensado — foi de fato ex
 | Latência p99 | 55.4 ms |
 | Conflitos de lock / retries / divergências de reconciliação na janela | 0 |
 
-Não há meta de RPS a bater (o enunciado é explícito sobre isso); o objetivo do experimento era caracterizar o comportamento sob concorrência real com poucas wallets "quentes" disputadas por muitos providers simultâneos — cenário estruturalmente parecido com o cenário obrigatório da seção 8, só que sustentado ao longo do tempo em vez de dois disparos isolados. Zero conflitos de lock registrados nessa janela específica é consistente com a correção estrutural da seção 3 (troca para `FOR NO KEY UPDATE`), não com ausência de disputa real — 10 providers contra 10 wallets garante colisões frequentes na mesma linha.
+Não há meta de RPS a bater; o objetivo do experimento era caracterizar o comportamento sob concorrência real com poucas wallets "quentes" disputadas por muitos providers simultâneos, sustentado ao longo do tempo em vez de dois disparos isolados. Zero conflitos de lock registrados nessa janela específica é consistente com a correção estrutural da seção 3 (troca para `FOR NO KEY UPDATE`), não com ausência de disputa real — 10 providers contra 10 wallets garante colisões frequentes na mesma linha.

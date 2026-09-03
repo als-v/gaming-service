@@ -1,6 +1,6 @@
 # gaming-service
 
-Processador distribuído de transações de apostas (`BET`/`WIN`/`LOSS`/`REFUND`/`ROLLBACK`) com saldo consistente sob concorrência real, idempotência via outbox/inbox transacional e observabilidade via Prometheus/Grafana.
+Processador distribuído de transações de jogo com saldo consistente sob concorrência real, idempotência via outbox/inbox transacional e observabilidade via Prometheus/Grafana.
 
 As decisões de arquitetura (autenticação, ORM, concorrência, idempotência, outbox/inbox, taxonomia de erros, representação de dinheiro, diagramas, trade-offs e resultado do teste de carga) estão consolidadas em [`ARCHITECTURE.md`](./ARCHITECTURE.md). Este arquivo cobre apenas **como rodar o projeto**.
 
@@ -87,7 +87,7 @@ A API sobe em `http://localhost:${PORT}` (padrão `3000`). Endpoints principais:
 - `GET /wallets/:walletId` — consulta wallet.
 - `GET /wallets/:walletId/ledger` — extrato paginado (cursor).
 - `POST /wallets/:walletId/reconciliation` — recalcula saldo a partir do ledger e compara com o saldo armazenado.
-- `POST /wagering/transactions` — submete uma transação (`BET`/`WIN`/`LOSS`/`REFUND`/`ROLLBACK`); exige header `idempotency-key`.
+- `POST /wagering/transactions` — submete uma transação financeira de jogo; exige header `idempotency-key`.
 - `GET /wagering/transactions/:transactionId` — consulta por id interno.
 - `GET /providers/:providerId/wagering/transactions/:externalTransactionId` — consulta por id externo do provedor.
 - `GET /health/live`, `GET /health/ready` — liveness (fixo) e readiness (checa Postgres e SQS de verdade; retorna `503` com a causa específica se algum dos dois estiver indisponível).
@@ -97,7 +97,7 @@ O consumer de comandos (`WagerTransactionsConsumer`) e os dois workers de backgr
 
 ## 5. Simular múltiplas instâncias (cenário de concorrência)
 
-O enunciado exige correção com **3 ou mais instâncias simultâneas** contra o mesmo Postgres/SQS. Como não há orquestração de container para a app, isso é feito localmente com várias portas:
+O cenário de concorrência pode ser exercitado com **3 ou mais instâncias simultâneas** contra o mesmo Postgres/SQS. Como não há orquestração de container para a app, isso é feito localmente com várias portas:
 
 ```bash
 PORT=3000 bun run dev
